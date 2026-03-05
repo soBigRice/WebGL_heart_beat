@@ -3,12 +3,35 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import heartVertexShader from "./shaders/heart.vert";
 import heartFragmentShader from "./shaders/heart.frag";
 
+type HeartUniforms = {
+  uTime: THREE.IUniform<number>;
+  uPointSize: THREE.IUniform<number>;
+  uColor: THREE.IUniform<THREE.Color>;
+  uRippleColorA: THREE.IUniform<THREE.Color>;
+  uRippleColorB: THREE.IUniform<THREE.Color>;
+  uOpacity: THREE.IUniform<number>;
+  uPulseEnabled: THREE.IUniform<number>;
+  uRippleOrigin: THREE.IUniform<THREE.Vector3>;
+  uRippleNormal: THREE.IUniform<THREE.Vector3>;
+  uRippleStartTime: THREE.IUniform<number>;
+  uRippleDuration: THREE.IUniform<number>;
+  uRippleAmplitude: THREE.IUniform<number>;
+  uRippleSpeed: THREE.IUniform<number>;
+  uRippleWidth: THREE.IUniform<number>;
+  uRippleFrequency: THREE.IUniform<number>;
+  uRippleActive: THREE.IUniform<number>;
+};
+
 export class ThreeScene {
+  private static readonly HEART_SCALE = 4.8;
+  private static readonly HEART_Y_STRETCH = 1.08;
   private container: HTMLElement;
   private scene: THREE.Scene;
   private camera: THREE.PerspectiveCamera;
   private renderer: THREE.WebGLRenderer;
   private controls!: OrbitControls;
+  private readonly raycaster = new THREE.Raycaster();
+  private readonly pointer = new THREE.Vector2();
   private heartParticles?: THREE.Points<
     THREE.BufferGeometry,
     THREE.ShaderMaterial
@@ -55,7 +78,7 @@ export class ThreeScene {
     const pulseWeights = new Float32Array(count);
     const phaseOffsets = new Float32Array(count);
 
-    const scale = 4.8;
+    const scale = ThreeScene.HEART_SCALE;
     let cursor = 0;
     let attempts = 0;
     const maxAttempts = count * 50;
@@ -79,7 +102,7 @@ export class ThreeScene {
 
       const i3 = cursor * 3;
       const px = x * scale;
-      const py = y * scale * 1.08;
+      const py = y * scale * ThreeScene.HEART_Y_STRETCH;
       const pz = z * scale;
       positions[i3] = px;
       positions[i3 + 1] = py;
@@ -111,14 +134,27 @@ export class ThreeScene {
       new THREE.BufferAttribute(phaseOffsets, 1),
     );
 
+    const uniforms: HeartUniforms = {
+      uTime: { value: 0 },
+      uPointSize: { value: 2.6 },
+      uColor: { value: new THREE.Color(0xff0000) },
+      uRippleColorA: { value: new THREE.Color(0x22d3ee) },
+      uRippleColorB: { value: new THREE.Color(0xfef08a) },
+      uOpacity: { value: 1 },
+      uPulseEnabled: { value: 0 },
+      uRippleOrigin: { value: new THREE.Vector3() },
+      uRippleNormal: { value: new THREE.Vector3(0, 1, 0) },
+      uRippleStartTime: { value: 0 },
+      uRippleDuration: { value: 2.25 },
+      uRippleAmplitude: { value: 0.65 },
+      uRippleSpeed: { value: 5.2 },
+      uRippleWidth: { value: 1.2 },
+      uRippleFrequency: { value: 7.5 },
+      uRippleActive: { value: 0 },
+    };
+
     const material = new THREE.ShaderMaterial({
-      uniforms: {
-        uTime: { value: 0 },
-        uPointSize: { value: 2.6 },
-        uColor: { value: new THREE.Color(0xff0000) },
-        uOpacity: { value: 1 },
-        uPulseEnabled: { value: 0 },
-      },
+      uniforms: uniforms as unknown as Record<string, THREE.IUniform>,
       vertexShader: heartVertexShader,
       fragmentShader: heartFragmentShader,
       transparent: true,
@@ -128,6 +164,14 @@ export class ThreeScene {
     });
 
     return new THREE.Points(geometry, material);
+  }
+
+  private getHeartUniforms(): HeartUniforms | null {
+    if (!this.heartParticles) {
+      return null;
+    }
+
+    return this.heartParticles.material.uniforms as unknown as HeartUniforms;
   }
 
   private init(): void {
@@ -147,14 +191,88 @@ export class ThreeScene {
     this.controls.minDistance = 3;
     this.controls.maxDistance = 14;
 
+    this.raycaster.params.Points = { threshold: 0.42 };
+
     this.timer.connect(document);
 
     this.heartParticles = this.createParticleHeart();
     this.heartParticles.rotation.set(-Math.PI / 2, 0, 0);
     this.scene.add(this.heartParticles);
 
+    this.renderer.domElement.addEventListener(
+      "pointerdown",
+      this.onPointerDown,
+    );
     window.addEventListener("resize", this.onWindowResize);
   }
+
+  private computeHeartNormal(localPoint: THREE.Vector3): THREE.Vector3 {
+    const scaleX = ThreeScene.HEART_SCALE;
+    const scaleY = ThreeScene.HEART_SCALE * ThreeScene.HEART_Y_STRETCH;
+    const scaleZ = ThreeScene.HEART_SCALE;
+
+    const x = localPoint.x / scaleX;
+    const y = localPoint.y / scaleY;
+    const z = localPoint.z / scaleZ;
+
+    const a = x * x + (9 / 4) * y * y + z * z - 1;
+    const a2 = a * a;
+    const z2 = z * z;
+    const z3 = z2 * z;
+
+    const dFx = 6 * x * a2 - 2 * x * z3;
+    const dFy = (27 / 2) * y * a2 - (9 / 40) * y * z3;
+    const dFz = 6 * z * a2 - 3 * x * x * z2 - (27 / 80) * y * y * z2;
+
+    const normal = new THREE.Vector3(dFx / scaleX, dFy / scaleY, dFz / scaleZ);
+    if (normal.lengthSq() < 1e-8) {
+      normal.copy(localPoint);
+    }
+    if (normal.lengthSq() < 1e-8) {
+      normal.set(0, 1, 0);
+    }
+
+    return normal.normalize();
+  }
+
+  private triggerRipple(origin: THREE.Vector3, normal: THREE.Vector3): void {
+    const uniforms = this.getHeartUniforms();
+    if (!uniforms) {
+      return;
+    }
+
+    uniforms.uRippleOrigin.value.copy(origin);
+    uniforms.uRippleNormal.value.copy(normal);
+    uniforms.uRippleStartTime.value = this.timer.getElapsed();
+    uniforms.uRippleActive.value = 1;
+  }
+
+  private onPointerDown = (event: PointerEvent): void => {
+    if (event.button !== 0 || !this.heartParticles) {
+      return;
+    }
+
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) {
+      return;
+    }
+
+    this.pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+    this.pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+
+    this.raycaster.setFromCamera(this.pointer, this.camera);
+    const hits = this.raycaster.intersectObject(this.heartParticles, false);
+    const [firstHit] = hits;
+    if (!firstHit) {
+      return;
+    }
+
+    const hitPointLocal = this.heartParticles.worldToLocal(
+      firstHit.point.clone(),
+    );
+    const hitNormalLocal = this.computeHeartNormal(hitPointLocal);
+    this.triggerRipple(hitPointLocal, hitNormalLocal);
+  };
 
   private onWindowResize = (): void => {
     this.camera.aspect =
@@ -172,10 +290,16 @@ export class ThreeScene {
     this.controls.update();
 
     const elapsedSeconds = this.timer.getElapsed();
-    if (this.heartParticles) {
-      const timeUniform = this.heartParticles.material.uniforms.uTime;
-      if (timeUniform) {
-        timeUniform.value = elapsedSeconds;
+    const uniforms = this.getHeartUniforms();
+    if (uniforms) {
+      uniforms.uTime.value = elapsedSeconds;
+
+      if (
+        uniforms.uRippleActive.value > 0.5 &&
+        elapsedSeconds - uniforms.uRippleStartTime.value >
+          uniforms.uRippleDuration.value
+      ) {
+        uniforms.uRippleActive.value = 0;
       }
     }
 
@@ -192,6 +316,10 @@ export class ThreeScene {
     }
 
     window.removeEventListener("resize", this.onWindowResize);
+    this.renderer.domElement.removeEventListener(
+      "pointerdown",
+      this.onPointerDown,
+    );
     this.timer.dispose();
     this.controls.dispose();
 
