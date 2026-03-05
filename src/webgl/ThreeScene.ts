@@ -11,20 +11,21 @@ type HeartUniforms = {
   uRippleColorB: THREE.IUniform<THREE.Color>;
   uOpacity: THREE.IUniform<number>;
   uPulseEnabled: THREE.IUniform<number>;
-  uRippleOrigin: THREE.IUniform<THREE.Vector3>;
-  uRippleNormal: THREE.IUniform<THREE.Vector3>;
-  uRippleStartTime: THREE.IUniform<number>;
+  uRippleOrigins: THREE.IUniform<THREE.Vector3[]>;
+  uRippleNormals: THREE.IUniform<THREE.Vector3[]>;
+  uRippleStartTimes: THREE.IUniform<number[]>;
   uRippleDuration: THREE.IUniform<number>;
   uRippleAmplitude: THREE.IUniform<number>;
   uRippleSpeed: THREE.IUniform<number>;
   uRippleWidth: THREE.IUniform<number>;
   uRippleFrequency: THREE.IUniform<number>;
-  uRippleActive: THREE.IUniform<number>;
+  uRippleActives: THREE.IUniform<number[]>;
 };
 
 export class ThreeScene {
   private static readonly HEART_SCALE = 4.8;
   private static readonly HEART_Y_STRETCH = 1.08;
+  private static readonly RIPPLE_POOL_SIZE = 8;
   private container: HTMLElement;
   private scene: THREE.Scene;
   private camera: THREE.PerspectiveCamera;
@@ -37,6 +38,7 @@ export class ThreeScene {
     THREE.ShaderMaterial
   >;
   private readonly timer = new THREE.Timer();
+  private nextRippleIndex = 0;
   private animationFrameId?: number;
 
   constructor(container: HTMLElement) {
@@ -134,6 +136,23 @@ export class ThreeScene {
       new THREE.BufferAttribute(phaseOffsets, 1),
     );
 
+    const rippleOrigins = Array.from(
+      { length: ThreeScene.RIPPLE_POOL_SIZE },
+      () => new THREE.Vector3(),
+    );
+    const rippleNormals = Array.from(
+      { length: ThreeScene.RIPPLE_POOL_SIZE },
+      () => new THREE.Vector3(0, 1, 0),
+    );
+    const rippleStartTimes = Array.from(
+      { length: ThreeScene.RIPPLE_POOL_SIZE },
+      () => -9999,
+    );
+    const rippleActives = Array.from(
+      { length: ThreeScene.RIPPLE_POOL_SIZE },
+      () => 0,
+    );
+
     const uniforms: HeartUniforms = {
       uTime: { value: 0 },
       uPointSize: { value: 2.6 },
@@ -142,15 +161,15 @@ export class ThreeScene {
       uRippleColorB: { value: new THREE.Color(0xfef08a) },
       uOpacity: { value: 1 },
       uPulseEnabled: { value: 0 },
-      uRippleOrigin: { value: new THREE.Vector3() },
-      uRippleNormal: { value: new THREE.Vector3(0, 1, 0) },
-      uRippleStartTime: { value: 0 },
+      uRippleOrigins: { value: rippleOrigins },
+      uRippleNormals: { value: rippleNormals },
+      uRippleStartTimes: { value: rippleStartTimes },
       uRippleDuration: { value: 2.25 },
       uRippleAmplitude: { value: 0.65 },
       uRippleSpeed: { value: 5.2 },
       uRippleWidth: { value: 1.2 },
       uRippleFrequency: { value: 7.5 },
-      uRippleActive: { value: 0 },
+      uRippleActives: { value: rippleActives },
     };
 
     const material = new THREE.ShaderMaterial({
@@ -241,10 +260,18 @@ export class ThreeScene {
       return;
     }
 
-    uniforms.uRippleOrigin.value.copy(origin);
-    uniforms.uRippleNormal.value.copy(normal);
-    uniforms.uRippleStartTime.value = this.timer.getElapsed();
-    uniforms.uRippleActive.value = 1;
+    const slot = this.nextRippleIndex;
+    const originSlot = uniforms.uRippleOrigins.value[slot];
+    const normalSlot = uniforms.uRippleNormals.value[slot];
+    if (!originSlot || !normalSlot) {
+      return;
+    }
+
+    originSlot.copy(origin);
+    normalSlot.copy(normal);
+    uniforms.uRippleStartTimes.value[slot] = this.timer.getElapsed();
+    uniforms.uRippleActives.value[slot] = 1;
+    this.nextRippleIndex = (slot + 1) % ThreeScene.RIPPLE_POOL_SIZE;
   }
 
   private onPointerDown = (event: PointerEvent): void => {
@@ -294,12 +321,15 @@ export class ThreeScene {
     if (uniforms) {
       uniforms.uTime.value = elapsedSeconds;
 
-      if (
-        uniforms.uRippleActive.value > 0.5 &&
-        elapsedSeconds - uniforms.uRippleStartTime.value >
-          uniforms.uRippleDuration.value
-      ) {
-        uniforms.uRippleActive.value = 0;
+      for (let i = 0; i < ThreeScene.RIPPLE_POOL_SIZE; i += 1) {
+        const isActive = uniforms.uRippleActives.value[i] ?? 0;
+        const startedAt = uniforms.uRippleStartTimes.value[i] ?? -9999;
+        if (
+          isActive > 0.5 &&
+          elapsedSeconds - startedAt > uniforms.uRippleDuration.value
+        ) {
+          uniforms.uRippleActives.value[i] = 0;
+        }
       }
     }
 
