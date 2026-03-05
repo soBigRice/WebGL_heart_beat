@@ -46,14 +46,16 @@ const parseHeartRateMeasurement = (value: DataView) => {
     index += 2
   }
 
-  let rrMs: number | null = null
-  if (hasRrInterval && value.byteLength >= index + 2) {
-    const rrRaw = value.getUint16(index, true)
-    // RR 原始单位是 1/1024 秒，这里转换为毫秒。
-    rrMs = Math.round((rrRaw / 1024) * 1000)
+  const rrMsList: number[] = []
+  if (hasRrInterval) {
+    while (value.byteLength >= index + 2) {
+      const rrRaw = value.getUint16(index, true)
+      rrMsList.push(Math.round((rrRaw / 1024) * 1000))
+      index += 2
+    }
   }
 
-  return { bpm, rrMs }
+  return { bpm, rrMsList }
 }
 
 const pushSample = (bpm: number, rrMs: number | null, rrEstimated: boolean) => {
@@ -78,16 +80,22 @@ const onHeartRateChanged = (event: Event) => {
     return
   }
 
-  const { bpm, rrMs: rawRrMs } = parseHeartRateMeasurement(value)
-  // 某些广播设备不会上报 RR，这里用 BPM 估算作为兜底。
-  const rrMs = rawRrMs ?? (bpm > 0 ? Math.round(60000 / bpm) : null)
-  const rrEstimated = rawRrMs === null && rrMs !== null
+  const { bpm, rrMsList } = parseHeartRateMeasurement(value)
+  const latestRrMs = rrMsList.length ? (rrMsList[rrMsList.length - 1] ?? null) : null
 
   currentBpm.value = bpm
-  currentRrMs.value = rrMs
-  currentRrEstimated.value = rrEstimated
+  currentRrMs.value = latestRrMs
+  currentRrEstimated.value = false
   latestAt.value = new Date().toLocaleTimeString()
-  pushSample(bpm, rrMs, rrEstimated)
+
+  if (rrMsList.length) {
+    rrMsList.forEach((rrMs) => {
+      pushSample(bpm, rrMs, false)
+    })
+    return
+  }
+
+  pushSample(bpm, null, false)
 }
 
 const onDisconnected = () => {

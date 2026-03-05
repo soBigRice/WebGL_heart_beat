@@ -8,6 +8,8 @@ import {
   Cpu,
   HeartPulse,
   LineChart,
+  Maximize2,
+  Minimize2,
   Radio,
   Sparkles,
   TimerReset,
@@ -35,6 +37,7 @@ const {
 const chartRef = ref<HTMLDivElement | null>(null)
 const rrWaveChartRef = ref<HTMLDivElement | null>(null)
 const heartViewportRef = ref<HTMLDivElement | null>(null)
+const visualStageRef = ref<HTMLElement | null>(null)
 
 let bpmChart: echarts.ECharts | null = null
 let rrWaveChart: echarts.ECharts | null = null
@@ -90,74 +93,21 @@ const deviceLabel = computed(() => {
   return 'No Device'
 })
 
+const isVisualFullscreen = ref(false)
+const fullscreenLabel = computed(() =>
+  isVisualFullscreen.value ? 'Exit Fullscreen' : 'Fullscreen',
+)
+
 const SAMPLE_WINDOW_SIZE = 120
-const ECG_POINT_COUNT = 60
-const ECG_BASELINE = 0
-const ECG_TICK_MS = 1000
-const ECG_MAX_PENDING_SPIKES = 8
-
-let ecgStreamData = Array.from({ length: ECG_POINT_COUNT }, () => ECG_BASELINE)
-let ecgTimeAxis = Array.from({ length: ECG_POINT_COUNT }, () => '--:--:--')
-let ecgPulseQueue: number[] = []
-let ecgStreamTimer: number | null = null
-
-const toRrMs = (bpm: number, rrMs: number | null): number =>
-  rrMs ?? (bpm > 0 ? Math.round(60000 / bpm) : 0)
 
 const clamp = (value: number, min: number, max: number): number =>
   Math.min(max, Math.max(min, value))
 
-const formatClockLabel = (timeMs: number): string =>
-  new Date(timeMs).toLocaleTimeString('zh-CN', { hour12: false })
-
-const syncInitialEcgTimeAxis = (): void => {
-  const now = Date.now()
-  ecgTimeAxis = Array.from({ length: ECG_POINT_COUNT }, (_, index) =>
-    formatClockLabel(now - (ECG_POINT_COUNT - 1 - index) * ECG_TICK_MS),
-  )
-}
-
-const buildPulsePeak = (rrMs: number | null): number => {
-  const rr = rrMs && rrMs > 0 ? rrMs : 820
-  const rrFactor = clamp(820 / rr, 0.78, 1.24)
-  return Number((0.96 * rrFactor).toFixed(4))
-}
-
-const resetEcgBaseline = (): void => {
-  ecgStreamData = Array.from({ length: ECG_POINT_COUNT }, () => ECG_BASELINE)
-  syncInitialEcgTimeAxis()
-}
-
-const tickEcgStream = (): void => {
-  const nextPoint = ecgPulseQueue.length
-    ? (ecgPulseQueue.shift() ?? ECG_BASELINE)
-    : ECG_BASELINE
-
-  ecgStreamData = [...ecgStreamData.slice(1), Number(nextPoint.toFixed(4))]
-  ecgTimeAxis = [...ecgTimeAxis.slice(1), formatClockLabel(Date.now())]
-  renderChart()
-}
-
-const startEcgStream = (): void => {
-  if (ecgStreamTimer !== null) {
-    return
-  }
-  ecgStreamTimer = window.setInterval(tickEcgStream, ECG_TICK_MS)
-}
-
-const stopEcgStream = (): void => {
-  if (ecgStreamTimer === null) {
-    return
-  }
-  window.clearInterval(ecgStreamTimer)
-  ecgStreamTimer = null
-}
-
-const enqueueEcgPulse = (rrMs: number | null): void => {
-  ecgPulseQueue = [
-    ...ecgPulseQueue.slice(-(ECG_MAX_PENDING_SPIKES - 1)),
-    buildPulsePeak(rrMs),
-  ]
+const toEcgPeak = (bpm: number, rrMs: number | null): number => {
+  const rrFactor =
+    rrMs && rrMs > 0 ? clamp(820 / rrMs, 0.78, 1.24) : 1
+  const bpmFactor = clamp((bpm || 70) / 75, 0.72, 1.22)
+  return Number((rrFactor * 0.7 + bpmFactor * 0.3).toFixed(4))
 }
 
 const renderChart = (): void => {
@@ -194,85 +144,59 @@ const renderChart = (): void => {
   const trendSamples = [...samples.value].reverse().slice(-SAMPLE_WINDOW_SIZE)
   const hasRealSamples = trendSamples.length > 0
 
-  bpmChart.setOption({
-    animation: false,
-    backgroundColor: 'transparent',
-    graphic: [],
-    grid: { left: 14, right: 12, top: 18, bottom: 18 },
-    xAxis: {
-      type: 'category',
-      boundaryGap: false,
-      data: ecgTimeAxis,
-      axisLabel: {
-        show: true,
-        color: 'rgba(148, 163, 184, 0.7)',
-        fontSize: 10,
-        interval: 9,
-      },
-      axisTick: { show: false },
-      axisLine: { lineStyle: { color: 'rgba(148, 163, 184, 0.2)' } },
-      splitLine: {
-        show: true,
-        lineStyle: { color: 'rgba(34, 211, 238, 0.12)' },
-      },
-    },
-    yAxis: {
-      type: 'value',
-      min: -0.58,
-      max: 1.4,
-      axisLabel: { show: false },
-      axisTick: { show: false },
-      axisLine: { show: false },
-      splitLine: {
-        show: true,
-        lineStyle: { color: 'rgba(34, 211, 238, 0.08)' },
-      },
-    },
-    tooltip: {
-      trigger: 'axis',
-      backgroundColor: 'rgba(2, 6, 23, 0.9)',
-      borderColor: 'rgba(56, 189, 248, 0.32)',
-      textStyle: { color: '#e2e8f0' },
-    },
-    series: [
-      {
-        name: 'ECG Glow',
-        type: 'line',
-        smooth: false,
-        showSymbol: false,
-        lineStyle: {
-          width: 7,
-          color: 'rgba(34, 211, 238, 0.2)',
-        },
-        data: ecgStreamData,
-        silent: true,
-        z: 1,
-      },
-      {
-        name: 'Lead II',
-        type: 'line',
-        smooth: false,
-        showSymbol: false,
-        lineStyle: {
-          width: 2.2,
-          color: '#22d3ee',
-          shadowColor: 'rgba(34, 211, 238, 0.7)',
-          shadowBlur: 14,
-        },
-        itemStyle: { color: '#f472b6' },
-        areaStyle: {
-          color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-            { offset: 0, color: 'rgba(34, 211, 238, 0.2)' },
-            { offset: 1, color: 'rgba(34, 211, 238, 0.01)' },
-          ]),
-        },
-        data: ecgStreamData,
-        z: 2,
-      },
-    ],
-  })
-
   if (!hasRealSamples) {
+    bpmChart.setOption({
+      animation: false,
+      backgroundColor: 'transparent',
+      graphic: noDataGraphic,
+      grid: { left: 14, right: 12, top: 18, bottom: 18 },
+      xAxis: {
+        type: 'category',
+        boundaryGap: false,
+        data: noDataXData,
+        axisLabel: { show: false },
+        axisTick: { show: false },
+        axisLine: { lineStyle: { color: 'rgba(148, 163, 184, 0.2)' } },
+        splitLine: {
+          show: true,
+          lineStyle: { color: 'rgba(34, 211, 238, 0.12)' },
+        },
+      },
+      yAxis: {
+        type: 'value',
+        min: 0,
+        max: 1.4,
+        axisLabel: { show: false },
+        axisTick: { show: false },
+        axisLine: { show: false },
+        splitLine: {
+          show: true,
+          lineStyle: { color: 'rgba(34, 211, 238, 0.08)' },
+        },
+      },
+      series: [
+        {
+          name: 'ECG Glow',
+          type: 'line',
+          smooth: false,
+          showSymbol: false,
+          lineStyle: { width: 7, color: 'rgba(34, 211, 238, 0.2)' },
+          data: [],
+          silent: true,
+          z: 1,
+        },
+        {
+          name: 'Lead II',
+          type: 'line',
+          smooth: false,
+          showSymbol: false,
+          lineStyle: { width: 2.2, color: '#22d3ee' },
+          data: [],
+          z: 2,
+        },
+      ],
+    })
+
     rrWaveChart.setOption({
       animation: false,
       backgroundColor: 'transparent',
@@ -327,8 +251,162 @@ const renderChart = (): void => {
     return
   }
 
-  const xData = trendSamples.map((sample) => sample.timeLabel)
-  const rrRaw = trendSamples.map((sample) => toRrMs(sample.bpm, sample.rrMs))
+  const ecgXData: string[] = []
+  const ecgData: number[] = []
+  trendSamples.forEach((sample) => {
+    const peak = toEcgPeak(sample.bpm, sample.rrMs)
+    ecgXData.push(sample.timeLabel, '', '')
+    ecgData.push(0, peak, 0)
+  })
+
+  bpmChart.setOption({
+    animation: false,
+    backgroundColor: 'transparent',
+    graphic: [],
+    grid: { left: 14, right: 12, top: 18, bottom: 18 },
+    xAxis: {
+      type: 'category',
+      boundaryGap: false,
+      data: ecgXData,
+      axisLabel: {
+        show: true,
+        color: 'rgba(148, 163, 184, 0.7)',
+        fontSize: 10,
+        formatter: (value: string) => value,
+      },
+      axisTick: { show: false },
+      axisLine: { lineStyle: { color: 'rgba(148, 163, 184, 0.2)' } },
+      splitLine: {
+        show: true,
+        lineStyle: { color: 'rgba(34, 211, 238, 0.12)' },
+      },
+    },
+    yAxis: {
+      type: 'value',
+      min: 0,
+      max: 1.4,
+      axisLabel: { show: false },
+      axisTick: { show: false },
+      axisLine: { show: false },
+      splitLine: {
+        show: true,
+        lineStyle: { color: 'rgba(34, 211, 238, 0.08)' },
+      },
+    },
+    tooltip: {
+      trigger: 'axis',
+      backgroundColor: 'rgba(2, 6, 23, 0.9)',
+      borderColor: 'rgba(56, 189, 248, 0.32)',
+      textStyle: { color: '#e2e8f0' },
+    },
+    series: [
+      {
+        name: 'ECG Glow',
+        type: 'line',
+        smooth: false,
+        showSymbol: false,
+        lineStyle: {
+          width: 7,
+          color: 'rgba(34, 211, 238, 0.2)',
+        },
+        data: ecgData,
+        silent: true,
+        z: 1,
+      },
+      {
+        name: 'Lead II',
+        type: 'line',
+        smooth: false,
+        showSymbol: false,
+        lineStyle: {
+          width: 2.2,
+          color: '#22d3ee',
+          shadowColor: 'rgba(34, 211, 238, 0.7)',
+          shadowBlur: 14,
+        },
+        itemStyle: { color: '#f472b6' },
+        areaStyle: {
+          color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+            { offset: 0, color: 'rgba(34, 211, 238, 0.2)' },
+            { offset: 1, color: 'rgba(34, 211, 238, 0.01)' },
+          ]),
+        },
+        data: ecgData,
+        z: 2,
+      },
+    ],
+  })
+
+  const rrSamples = trendSamples.filter((sample) => sample.rrMs !== null)
+  if (!rrSamples.length) {
+    rrWaveChart.setOption({
+      animation: false,
+      backgroundColor: 'transparent',
+      graphic: [
+        {
+          type: 'text',
+          left: 'center',
+          top: 'middle',
+          silent: true,
+          style: {
+            text: 'Waiting for RR interval data...',
+            fill: 'rgba(148, 163, 184, 0.72)',
+            font: '500 13px "Segoe UI", sans-serif',
+          },
+        },
+      ],
+      grid: { left: 12, right: 12, top: 18, bottom: 16 },
+      xAxis: {
+        type: 'category',
+        boundaryGap: false,
+        data: noDataXData,
+        axisLabel: { show: false },
+        axisTick: { show: false },
+        axisLine: { lineStyle: { color: 'rgba(148, 163, 184, 0.14)' } },
+        splitLine: {
+          show: true,
+          lineStyle: { color: 'rgba(34, 211, 238, 0.07)' },
+        },
+      },
+      yAxis: {
+        type: 'value',
+        min: -120,
+        max: 120,
+        axisLabel: { show: false },
+        axisTick: { show: false },
+        axisLine: { show: false },
+        splitLine: {
+          show: true,
+          lineStyle: { color: 'rgba(244, 114, 182, 0.08)' },
+        },
+      },
+      series: [
+        {
+          name: 'RR Wave Glow',
+          type: 'line',
+          smooth: 0.24,
+          showSymbol: false,
+          lineStyle: { width: 7, color: 'rgba(34, 211, 238, 0.18)' },
+          data: [],
+          silent: true,
+          z: 1,
+        },
+        {
+          name: 'RR Wave',
+          type: 'line',
+          smooth: 0.24,
+          showSymbol: false,
+          lineStyle: { width: 2.1, color: '#f472b6' },
+          data: [],
+          z: 2,
+        },
+      ],
+    })
+    return
+  }
+
+  const xData = rrSamples.map((sample) => sample.timeLabel)
+  const rrRaw = rrSamples.map((sample) => sample.rrMs as number)
   const rrBaseline =
     rrRaw.reduce((sum, value) => sum + value, 0) / Math.max(1, rrRaw.length)
   const rrWaveData = rrRaw.map((value) =>
@@ -418,6 +496,31 @@ const handleResize = (): void => {
   rrWaveChart?.resize()
 }
 
+const syncFullscreenState = (): void => {
+  isVisualFullscreen.value = document.fullscreenElement === visualStageRef.value
+  window.setTimeout(() => {
+    handleResize()
+    window.dispatchEvent(new Event('resize'))
+  }, 50)
+}
+
+const toggleVisualFullscreen = async (): Promise<void> => {
+  const target = visualStageRef.value
+  if (!target) {
+    return
+  }
+
+  try {
+    if (document.fullscreenElement === target) {
+      await document.exitFullscreen()
+      return
+    }
+    await target.requestFullscreen()
+  } catch {
+    // Ignore fullscreen rejection when browser blocks the request.
+  }
+}
+
 const handleFabClick = async (): Promise<void> => {
   if (isConnected.value) {
     await disconnectWatch()
@@ -427,27 +530,33 @@ const handleFabClick = async (): Promise<void> => {
 }
 
 onMounted(() => {
-  resetEcgBaseline()
-  startEcgStream()
   renderChart()
   window.addEventListener('resize', handleResize)
+  document.addEventListener('fullscreenchange', syncFullscreenState)
   if (heartViewportRef.value) {
     threeScene = new ThreeScene(heartViewportRef.value)
+    threeScene.setPulseEnabled(isConnected.value)
   }
 })
 
 watch(samples, () => {
   const latestSample = samples.value[0]
-  if (latestSample) {
-    enqueueEcgPulse(toRrMs(latestSample.bpm, latestSample.rrMs))
+  if (latestSample && threeScene) {
+    threeScene.triggerHeartbeat(latestSample.bpm, latestSample.rrMs)
   }
   renderChart()
 })
 
+watch(isConnected, (connected) => {
+  threeScene?.setPulseEnabled(connected)
+})
+
 onBeforeUnmount(() => {
   window.removeEventListener('resize', handleResize)
-  stopEcgStream()
-  ecgPulseQueue = []
+  document.removeEventListener('fullscreenchange', syncFullscreenState)
+  if (document.fullscreenElement === visualStageRef.value) {
+    void document.exitFullscreen().catch(() => undefined)
+  }
   if (bpmChart) {
     bpmChart.dispose()
     bpmChart = null
@@ -488,23 +597,66 @@ onBeforeUnmount(() => {
       </div>
     </header>
 
-    <div class="hero-grid">
-      <article class="glass heart-panel">
-        <div class="panel-head">
-          <p class="panel-kicker">
-            <Sparkles class="label-icon" />
-            <span>Pulse Core</span>
+    <div class="hero-grid" :class="{ 'is-visual-fullscreen': isVisualFullscreen }">
+      <section
+        ref="visualStageRef"
+        class="visual-stage"
+        :class="{ 'is-fullscreen': isVisualFullscreen }"
+      >
+        <article class="glass heart-panel">
+          <div class="panel-head-row">
+            <div class="panel-head">
+              <p class="panel-kicker">
+                <Sparkles class="label-icon" />
+                <span>Pulse Core</span>
+              </p>
+              <p class="panel-title">3D Heart Field</p>
+            </div>
+            <button
+              class="fullscreen-btn"
+              type="button"
+              :aria-label="fullscreenLabel"
+              @click="toggleVisualFullscreen"
+            >
+              <Minimize2 v-if="isVisualFullscreen" class="fullscreen-icon" />
+              <Maximize2 v-else class="fullscreen-icon" />
+              <span>{{ fullscreenLabel }}</span>
+            </button>
+          </div>
+          <div ref="heartViewportRef" class="heart-viewport"></div>
+          <p class="panel-footnote">
+            <Radio class="helper-icon" />
+            <span>Click heart to trigger radial ripples.</span>
           </p>
-          <p class="panel-title">3D Heart Field</p>
-        </div>
-        <div ref="heartViewportRef" class="heart-viewport"></div>
-        <p class="panel-footnote">
-          <Radio class="helper-icon" />
-          <span>Click heart to trigger radial ripples.</span>
-        </p>
-      </article>
+        </article>
 
-      <div class="metrics-column">
+        <article class="glass trend-panel">
+          <div class="trend-grid">
+            <div class="trend-card">
+              <div class="trend-head">
+                <p class="trend-title">
+                  <LineChart class="title-icon" />
+                  <span>ECG Waveform</span>
+                </p>
+                <p class="trend-subtitle">Real heartbeat events from Bluetooth data</p>
+              </div>
+              <div ref="chartRef" class="trend-chart"></div>
+            </div>
+            <div class="trend-card hide-in-fullscreen">
+              <div class="trend-head">
+                <p class="trend-title">
+                  <Activity class="title-icon is-pink" />
+                  <span>RR Variability Wave</span>
+                </p>
+                <p class="trend-subtitle">Beat-to-beat interval waveform</p>
+              </div>
+              <div ref="rrWaveChartRef" class="trend-chart"></div>
+            </div>
+          </div>
+        </article>
+      </section>
+
+      <div v-if="!isVisualFullscreen" class="metrics-column">
         <article class="glass metric bpm-card">
           <p class="metric-label">
             <HeartPulse class="label-icon" />
@@ -551,31 +703,6 @@ onBeforeUnmount(() => {
         </article>
       </div>
     </div>
-
-    <article class="glass trend-panel">
-      <div class="trend-grid">
-        <div class="trend-card">
-          <div class="trend-head">
-            <p class="trend-title">
-              <LineChart class="title-icon" />
-              <span>ECG Waveform</span>
-            </p>
-            <p class="trend-subtitle">1s rolling timeline, heartbeat-triggered spike</p>
-          </div>
-          <div ref="chartRef" class="trend-chart"></div>
-        </div>
-        <div class="trend-card">
-          <div class="trend-head">
-            <p class="trend-title">
-              <Activity class="title-icon is-pink" />
-              <span>RR Variability Wave</span>
-            </p>
-            <p class="trend-subtitle">Beat-to-beat interval waveform</p>
-          </div>
-          <div ref="rrWaveChartRef" class="trend-chart"></div>
-        </div>
-      </div>
-    </article>
 
     <p v-if="needsSecureContext" class="alert">
       <AlertTriangle class="alert-icon" />
@@ -725,6 +852,16 @@ onBeforeUnmount(() => {
   grid-template-columns: minmax(0, 1.95fr) minmax(0, 0.72fr);
 }
 
+.hero-grid.is-visual-fullscreen {
+  grid-template-columns: 1fr;
+}
+
+.visual-stage {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
 .glass {
   border: 1px solid rgba(56, 189, 248, 0.24);
   border-radius: 16px;
@@ -745,9 +882,48 @@ onBeforeUnmount(() => {
   gap: 12px;
 }
 
+.panel-head-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 .panel-head {
   display: grid;
   gap: 2px;
+}
+
+.fullscreen-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid rgba(56, 189, 248, 0.42);
+  border-radius: 999px;
+  padding: 8px 12px;
+  background: rgba(2, 6, 23, 0.62);
+  color: #bae6fd;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  cursor: pointer;
+  transition:
+    background-color 0.2s ease,
+    border-color 0.2s ease,
+    color 0.2s ease;
+}
+
+.fullscreen-btn:hover {
+  background: rgba(15, 23, 42, 0.84);
+  border-color: rgba(103, 232, 249, 0.72);
+  color: #e0f2fe;
+}
+
+.fullscreen-icon {
+  width: 14px;
+  height: 14px;
+  stroke-width: 2.2;
 }
 
 .panel-kicker {
@@ -954,6 +1130,56 @@ onBeforeUnmount(() => {
   background: rgba(2, 6, 23, 0.32);
 }
 
+.visual-stage:fullscreen {
+  width: 100vw;
+  height: 100vh;
+  padding: 14px;
+  background:
+    radial-gradient(circle at 14% 10%, rgba(56, 189, 248, 0.18), transparent 34%),
+    radial-gradient(circle at 88% 90%, rgba(244, 114, 182, 0.16), transparent 38%),
+    #020617;
+  grid-template-rows: minmax(0, 2.05fr) minmax(0, 1fr);
+  align-content: stretch;
+}
+
+.visual-stage:fullscreen .heart-panel {
+  height: 100%;
+  min-height: 0;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+}
+
+.visual-stage:fullscreen .heart-viewport {
+  min-height: 0;
+  height: 100%;
+  aspect-ratio: auto;
+}
+
+.visual-stage:fullscreen .trend-panel {
+  height: 100%;
+  min-height: 0;
+  padding: 10px;
+}
+
+.visual-stage:fullscreen .trend-grid {
+  height: 100%;
+  grid-template-rows: minmax(0, 1fr);
+}
+
+.visual-stage:fullscreen .trend-card {
+  height: 100%;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.visual-stage:fullscreen .trend-card.hide-in-fullscreen {
+  display: none;
+}
+
+.visual-stage:fullscreen .trend-chart {
+  height: 100%;
+  min-height: 150px;
+}
+
 .alert {
   margin: 0;
   padding: 9px 12px;
@@ -1038,6 +1264,10 @@ onBeforeUnmount(() => {
     grid-template-columns: 1fr;
   }
 
+  .panel-head-row {
+    align-items: center;
+  }
+
   .trend-grid {
     grid-template-columns: 1fr;
   }
@@ -1070,6 +1300,15 @@ onBeforeUnmount(() => {
 
   .device-chip {
     display: none;
+  }
+
+  .panel-head-row {
+    flex-wrap: wrap;
+  }
+
+  .fullscreen-btn {
+    padding: 7px 10px;
+    font-size: 11px;
   }
 
   .trend-chart {

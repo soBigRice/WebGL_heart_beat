@@ -11,6 +11,9 @@ type HeartUniforms = {
   uRippleColorB: THREE.IUniform<THREE.Color>;
   uOpacity: THREE.IUniform<number>;
   uPulseEnabled: THREE.IUniform<number>;
+  uBeatStartedAt: THREE.IUniform<number>;
+  uBeatDuration: THREE.IUniform<number>;
+  uBeatStrength: THREE.IUniform<number>;
   uRippleOrigins: THREE.IUniform<THREE.Vector3[]>;
   uRippleNormals: THREE.IUniform<THREE.Vector3[]>;
   uRippleStartTimes: THREE.IUniform<number[]>;
@@ -40,6 +43,13 @@ export class ThreeScene {
   private readonly timer = new THREE.Timer();
   private nextRippleIndex = 0;
   private animationFrameId?: number;
+  private estimatedIntervalSec = 0.86;
+  private previousIntervalSec: number | null = null;
+  private beatDurationSec = 0.34;
+  private beatStrength = 0.9;
+  private nextBeatAtSec: number | null = null;
+  private lastBeatAtSec: number | null = null;
+  private hasLiveRate = false;
 
   constructor(container: HTMLElement) {
     if (!container) {
@@ -162,6 +172,9 @@ export class ThreeScene {
       uRippleColorB: { value: new THREE.Color(0xfef08a) },
       uOpacity: { value: 1 },
       uPulseEnabled: { value: 0 },
+      uBeatStartedAt: { value: -9999 },
+      uBeatDuration: { value: 0.34 },
+      uBeatStrength: { value: 0 },
       uRippleOrigins: { value: rippleOrigins },
       uRippleNormals: { value: rippleNormals },
       uRippleStartTimes: { value: rippleStartTimes },
@@ -276,6 +289,14 @@ export class ThreeScene {
     this.nextRippleIndex = (slot + 1) % ThreeScene.RIPPLE_POOL_SIZE;
   }
 
+  private startBeat(uniforms: HeartUniforms, startedAt: number): void {
+    uniforms.uBeatStartedAt.value = startedAt;
+    uniforms.uBeatDuration.value = this.beatDurationSec;
+    uniforms.uBeatStrength.value = this.beatStrength;
+    this.lastBeatAtSec = startedAt;
+    this.nextBeatAtSec = startedAt + this.estimatedIntervalSec;
+  }
+
   private onPointerDown = (event: PointerEvent): void => {
     if (event.button !== 0 || !this.heartParticles) {
       return;
@@ -333,10 +354,89 @@ export class ThreeScene {
           uniforms.uRippleActives.value[i] = 0;
         }
       }
+
+      if (
+        uniforms.uPulseEnabled.value > 0.5 &&
+        this.hasLiveRate &&
+        this.nextBeatAtSec !== null
+      ) {
+        while (elapsedSeconds >= this.nextBeatAtSec) {
+          this.startBeat(uniforms, this.nextBeatAtSec);
+          if (
+            elapsedSeconds - this.nextBeatAtSec >
+            this.estimatedIntervalSec * 3
+          ) {
+            this.nextBeatAtSec = elapsedSeconds + this.estimatedIntervalSec;
+            break;
+          }
+        }
+      }
     }
 
     this.renderer.render(this.scene, this.camera);
   };
+
+  public setPulseEnabled(enabled: boolean): void {
+    const uniforms = this.getHeartUniforms();
+    if (!uniforms) {
+      return;
+    }
+
+    uniforms.uPulseEnabled.value = enabled ? 1 : 0;
+    if (!enabled) {
+      uniforms.uBeatStrength.value = 0;
+      uniforms.uBeatStartedAt.value = -9999;
+      this.hasLiveRate = false;
+      this.previousIntervalSec = null;
+      this.nextBeatAtSec = null;
+      this.lastBeatAtSec = null;
+    }
+  }
+
+  public triggerHeartbeat(bpm: number, rrMs: number | null): void {
+    const uniforms = this.getHeartUniforms();
+    if (!uniforms || uniforms.uPulseEnabled.value < 0.5) {
+      return;
+    }
+
+    const rawInterval =
+      rrMs && rrMs > 0 ? rrMs / 1000 : bpm > 0 ? 60 / bpm : this.estimatedIntervalSec;
+    const boundedInterval = THREE.MathUtils.clamp(rawInterval, 0.35, 1.6);
+    const averagedInterval =
+      this.previousIntervalSec !== null
+        ? (this.previousIntervalSec + boundedInterval) * 0.5
+        : boundedInterval;
+
+    this.estimatedIntervalSec = this.hasLiveRate
+      ? THREE.MathUtils.lerp(this.estimatedIntervalSec, averagedInterval, 0.56)
+      : averagedInterval;
+    this.previousIntervalSec = boundedInterval;
+    this.hasLiveRate = true;
+
+    const derivedBpm = 60 / this.estimatedIntervalSec;
+    const blendedBpm =
+      bpm > 0 ? THREE.MathUtils.lerp(derivedBpm, bpm, 0.5) : derivedBpm;
+
+    this.beatDurationSec = THREE.MathUtils.clamp(
+      this.estimatedIntervalSec * 0.5,
+      0.2,
+      0.56,
+    );
+    this.beatStrength = THREE.MathUtils.clamp(
+      0.68 + (blendedBpm - 60) * 0.006,
+      0.58,
+      1.26,
+    );
+
+    const now = this.timer.getElapsed();
+    if (this.nextBeatAtSec === null || this.lastBeatAtSec === null) {
+      this.startBeat(uniforms, now);
+      return;
+    }
+
+    const projectedNext = this.lastBeatAtSec + this.estimatedIntervalSec;
+    this.nextBeatAtSec = Math.max(now + 0.05, projectedNext);
+  }
 
   public addObject(object: THREE.Object3D): void {
     this.scene.add(object);

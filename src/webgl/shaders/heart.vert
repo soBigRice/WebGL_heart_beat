@@ -1,6 +1,9 @@
 uniform float uTime;
 uniform float uPointSize;
 uniform float uPulseEnabled;
+uniform float uBeatStartedAt;
+uniform float uBeatDuration;
+uniform float uBeatStrength;
 uniform vec3 uRippleOrigins[8];
 uniform vec3 uRippleNormals[8];
 uniform float uRippleStartTimes[8];
@@ -23,14 +26,21 @@ void main() {
   vRippleMask = 0.0;
   vRipplePhase = 0.0;
 
-  float cycle = mod(uTime * 1.18, 1.0);
-  float firstBeat = exp(-pow((cycle - 0.08) / 0.058, 2.0)) * 0.16;
-  float secondBeat = exp(-pow((cycle - 0.28) / 0.086, 2.0)) * 0.10;
-  float pulse = 1.0 + (firstBeat + secondBeat) * aPulseWeight * uPulseEnabled;
+  float beatAge = uTime - uBeatStartedAt;
+  float beatWindow = step(0.0, beatAge) * (1.0 - step(uBeatDuration, beatAge));
+  float beatProgress = clamp(beatAge / max(uBeatDuration, 0.0001), 0.0, 1.0);
+  float firstBeat = exp(-pow((beatProgress - 0.22) / 0.16, 2.0));
+  float secondBeat = exp(-pow((beatProgress - 0.54) / 0.21, 2.0)) * 0.44;
+  float beatEnvelope = (firstBeat + secondBeat) * beatWindow * uPulseEnabled;
 
+  float pulse = 1.0 + beatEnvelope * uBeatStrength * aPulseWeight * 0.22;
   vec3 transformed = position * pulse;
-  transformed.y += sin(uTime * 2.6 + aPhaseOffset * 1.25) * 0.03 * uPulseEnabled;
-  transformed.x += cos(uTime * 1.9 + aPhaseOffset) * 0.012 * uPulseEnabled;
+
+  float radius = length(position);
+  float innerBoost = 1.0 - smoothstep(0.0, 7.6, radius);
+  vec3 radialDirection = radius > 0.0001 ? normalize(position) : vec3(0.0, 1.0, 0.0);
+  transformed += radialDirection * beatEnvelope * uBeatStrength * (0.02 + innerBoost * 0.26);
+  transformed.y += sin(aPhaseOffset + uTime * 3.4) * 0.01 * beatEnvelope;
 
   float rippleMaskAccum = 0.0;
   float ripplePhaseAccum = 0.0;
