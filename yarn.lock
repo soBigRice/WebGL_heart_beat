@@ -661,6 +661,11 @@ undici-types@~7.16.0:
   resolved "https://registry.npmmirror.com/undici-types/-/undici-types-7.16.0.tgz#ffccdff36aea4884cbfce9a750a0580224f58a46"
   integrity sha512-Zz+aZWSj8LE6zoxD+xrjh4VfkIG8Ya6LvYkZqtUQGJPZjYl53ypCaUwWqo7eI0x66KBGeRo+mlBEkMSeSZ38Nw==
 
+vite-plugin-glsl@^1.5.5:
+  version "1.5.5"
+  resolved "https://registry.npmmirror.com/vite-plugin-glsl/-/vite-plugin-glsl-1.5.5.tgz#6316d733c96ecf98f3d05f8a0188bbb5d5d3e31f"
+  integrity sha512-6NM2P4JkM+1hNSqMhM4eagX03bmhEoTyrOrk68y3Q6KXfdF73QIuCb6BmRZvwLPgXTCOBM3Zc8gL1WxctYnrUQ==
+
 vite@^7.3.1:
   version "7.3.1"
   resolved "https://registry.npmmirror.com/vite/-/vite-7.3.1.tgz#7f6cfe8fb9074138605e822a75d9d30b814d6507"
