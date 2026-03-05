@@ -59,6 +59,7 @@ export class ThreeScene {
     );
     this.renderer = new THREE.WebGLRenderer({
       antialias: true,
+      alpha: true,
       powerPreference: "high-performance",
     });
 
@@ -155,7 +156,7 @@ export class ThreeScene {
 
     const uniforms: HeartUniforms = {
       uTime: { value: 0 },
-      uPointSize: { value: 2.6 },
+      uPointSize: { value: 4.0 },
       uColor: { value: new THREE.Color(0xff0000) },
       uRippleColorA: { value: new THREE.Color(0x22d3ee) },
       uRippleColorB: { value: new THREE.Color(0xfef08a) },
@@ -164,11 +165,11 @@ export class ThreeScene {
       uRippleOrigins: { value: rippleOrigins },
       uRippleNormals: { value: rippleNormals },
       uRippleStartTimes: { value: rippleStartTimes },
-      uRippleDuration: { value: 2.25 },
-      uRippleAmplitude: { value: 0.65 },
-      uRippleSpeed: { value: 5.2 },
-      uRippleWidth: { value: 1.2 },
-      uRippleFrequency: { value: 7.5 },
+      uRippleDuration: { value: 3.6 },
+      uRippleAmplitude: { value: 0.58 },
+      uRippleSpeed: { value: 7.4 },
+      uRippleWidth: { value: 1.45 },
+      uRippleFrequency: { value: 6.8 },
       uRippleActives: { value: rippleActives },
     };
 
@@ -200,6 +201,7 @@ export class ThreeScene {
     );
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+    this.renderer.setClearColor(0x000000, 0);
     this.container.appendChild(this.renderer.domElement);
 
     this.camera.position.set(0, 0, 20);

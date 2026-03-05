@@ -12,11 +12,6 @@ const routes: RouteRecordRaw[] = [
     component: () => import('../views/AboutView.vue'),
   },
   {
-    path: '/heartTest',
-    name: 'heartTest',
-    component: () => import('../views/HeartTestView.vue'),
-  },
-  {
     path: '/:pathMatch(.*)*',
     redirect: '/',
   },

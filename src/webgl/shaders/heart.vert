@@ -42,19 +42,16 @@ void main() {
       if (rippleTime >= 0.0 && rippleTime <= uRippleDuration) {
         vec3 rippleNormal = normalize(uRippleNormals[i]);
         vec3 fromOrigin = position - uRippleOrigins[i];
-        float normalDistance = dot(fromOrigin, rippleNormal);
-        vec3 tangentOffset = fromOrigin - rippleNormal * normalDistance;
-        float radialDistance = length(tangentOffset);
+        float radialDistance = length(fromOrigin);
 
         float waveFront = rippleTime * uRippleSpeed;
         float travel = radialDistance - waveFront;
         float ring = exp(-pow(travel / uRippleWidth, 2.0));
-        float thickness = exp(-pow(normalDistance / (uRippleWidth * 2.4), 2.0));
-        float attenuation = 1.0 - smoothstep(uRippleDuration * 0.62, uRippleDuration, rippleTime);
+        float attenuation = 1.0 - smoothstep(uRippleDuration * 0.88, uRippleDuration, rippleTime);
         float shimmer = 0.78 + 0.22 * sin(travel * uRippleFrequency);
-        float ripple = uRippleAmplitude * ring * thickness * attenuation * shimmer;
+        float ripple = uRippleAmplitude * ring * attenuation * shimmer;
 
-        float rippleMask = clamp(ring * thickness * attenuation, 0.0, 1.0);
+        float rippleMask = clamp(ring * attenuation, 0.0, 1.0);
         transformed += rippleNormal * ripple;
         rippleMaskAccum += rippleMask;
         ripplePhaseAccum += travel * rippleMask;
