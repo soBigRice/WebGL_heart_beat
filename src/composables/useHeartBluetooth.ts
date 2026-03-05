@@ -1,5 +1,6 @@
 import { ref } from 'vue'
 
+// 统一的心率样本结构，供 UI 展示和历史趋势使用。
 export type HeartSample = {
   bpm: number
   rrMs: number | null
@@ -8,6 +9,7 @@ export type HeartSample = {
   timeMs: number
 }
 
+// Web Bluetooth 必须可用，并且页面需运行在安全上下文（HTTPS/localhost）。
 const isSupported =
   typeof window !== 'undefined' && typeof navigator !== 'undefined' && 'bluetooth' in navigator
 const needsSecureContext =
@@ -27,6 +29,7 @@ const samples = ref<HeartSample[]>([])
 let bluetoothDevice: any = null
 let heartRateCharacteristic: any = null
 
+// 解析蓝牙标准 Heart Rate Measurement 特征（0x2A37）。
 const parseHeartRateMeasurement = (value: DataView) => {
   const flags = value.getUint8(0)
   const isHeartRate16Bit = (flags & 0x01) !== 0
@@ -46,6 +49,7 @@ const parseHeartRateMeasurement = (value: DataView) => {
   let rrMs: number | null = null
   if (hasRrInterval && value.byteLength >= index + 2) {
     const rrRaw = value.getUint16(index, true)
+    // RR 原始单位是 1/1024 秒，这里转换为毫秒。
     rrMs = Math.round((rrRaw / 1024) * 1000)
   }
 
@@ -54,6 +58,7 @@ const parseHeartRateMeasurement = (value: DataView) => {
 
 const pushSample = (bpm: number, rrMs: number | null, rrEstimated: boolean) => {
   const now = Date.now()
+  // 样本按“最新在前”保存，并限制最大数量避免内存持续增长。
   samples.value = [
     {
       bpm,
@@ -74,6 +79,7 @@ const onHeartRateChanged = (event: Event) => {
   }
 
   const { bpm, rrMs: rawRrMs } = parseHeartRateMeasurement(value)
+  // 某些广播设备不会上报 RR，这里用 BPM 估算作为兜底。
   const rrMs = rawRrMs ?? (bpm > 0 ? Math.round(60000 / bpm) : null)
   const rrEstimated = rawRrMs === null && rrMs !== null
 
@@ -103,6 +109,7 @@ const connectWatch = async () => {
     return
   }
 
+  // 连接流程进行中时锁定 UI 状态，避免重复点击。
   isConnecting.value = true
   statusMessage.value = 'Requesting Bluetooth device...'
 
@@ -116,6 +123,7 @@ const connectWatch = async () => {
       throw new Error('Web Bluetooth API is unavailable.')
     }
 
+    // 优先匹配标准 heart_rate 服务，同时兼容已知设备名前缀。
     const device = await bluetooth.requestDevice({
       filters: [
         { services: ['heart_rate'] },
@@ -125,6 +133,7 @@ const connectWatch = async () => {
       optionalServices: ['battery_service', 'device_information'],
     })
 
+    // 重连新设备前先解绑旧监听，避免重复回调。
     if (bluetoothDevice) {
       bluetoothDevice.removeEventListener('gattserverdisconnected', onDisconnected)
     }
@@ -144,6 +153,7 @@ const connectWatch = async () => {
       'heart_rate_measurement',
     )
 
+    // 绑定新特征通知前，先清理旧特征监听。
     if (heartRateCharacteristic) {
       heartRateCharacteristic.removeEventListener(
         'characteristicvaluechanged',
@@ -161,6 +171,7 @@ const connectWatch = async () => {
     isConnected.value = true
     statusMessage.value = 'Connected. Waiting for heart rate data...'
   } catch (error) {
+    // 尽量保留原始错误信息，方便定位连接问题。
     statusMessage.value =
       error instanceof Error ? error.message : 'Bluetooth connection failed.'
     isConnected.value = false
@@ -172,6 +183,7 @@ const connectWatch = async () => {
 const disconnectWatch = async () => {
   try {
     if (heartRateCharacteristic) {
+      // 先停止通知，再清理引用，避免断开过程中仍触发回调。
       heartRateCharacteristic.removeEventListener(
         'characteristicvaluechanged',
         onHeartRateChanged,
@@ -179,7 +191,7 @@ const disconnectWatch = async () => {
       try {
         await heartRateCharacteristic.stopNotifications()
       } catch {
-        // Ignore notification stop errors during disconnect.
+        // 断开时停止通知失败可忽略，不影响最终释放连接。
       }
     }
   } finally {
@@ -187,6 +199,7 @@ const disconnectWatch = async () => {
   }
 
   if (bluetoothDevice) {
+    // 断开前先移除监听，防止残留回调污染状态。
     bluetoothDevice.removeEventListener('gattserverdisconnected', onDisconnected)
     if (bluetoothDevice.gatt?.connected) {
       bluetoothDevice.gatt.disconnect()

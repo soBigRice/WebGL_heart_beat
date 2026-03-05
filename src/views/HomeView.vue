@@ -1,18 +1,35 @@
+<script setup lang="ts">
+import { onMounted, onUnmounted, ref } from 'vue';
+import { ThreeScene } from '../webgl/ThreeScene';
+
+const webglContainer = ref<HTMLElement | null>(null);
+let threeScene: ThreeScene | null = null;
+
+onMounted(() => {
+  if (webglContainer.value) {
+    threeScene = new ThreeScene(webglContainer.value);
+  }
+});
+
+onUnmounted(() => {
+  if (threeScene) {
+    threeScene.destroy();
+    threeScene = null;
+  }
+});
+</script>
+
 <template>
-  <section class="view">
-    <h2>Home</h2>
-    <p>Vue Router is configured and working.</p>
-  </section>
+  <div id="webgl-container" ref="webglContainer"></div>
 </template>
 
 <style scoped>
-.view {
-  padding: 24px;
-  border-radius: 12px;
-  background-color: #ffffff;
-}
-
-h2 {
-  margin-top: 0;
+#webgl-container {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  z-index: 0;
 }
 </style>
