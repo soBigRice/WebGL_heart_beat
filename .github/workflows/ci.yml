@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build (Node 20)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: yarn
+          cache-dependency-path: yarn.lock
+
+      - name: Setup Yarn v1
+        run: npm install -g yarn@1.22.22
+
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Build
+        run: yarn build
+
+      - name: Upload dist artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist
+          if-no-files-found: error

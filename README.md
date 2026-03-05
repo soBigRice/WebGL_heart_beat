@@ -31,6 +31,15 @@ npm run dev
 
 打开：`http://localhost:5173`
 
+## GitHub Actions
+
+- CI 校验：`.github/workflows/ci.yml`
+  - push / PR 自动安装依赖并执行 `yarn build`
+- GitHub Pages 发布：`.github/workflows/deploy-pages.yml`
+  - 推送到 `main` / `master` 自动构建并部署到 Pages
+
+首次启用请在仓库 `Settings -> Pages` 中将 `Source` 设为 `GitHub Actions`。
+
 ## 使用流程（心率广播 + 本项目）
 
 1. 在 iPhone 打开「心率广播」App，并确认已连接 Apple Watch。
