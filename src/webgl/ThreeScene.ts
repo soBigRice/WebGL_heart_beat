@@ -25,10 +25,17 @@ type HeartUniforms = {
   uRippleActives: THREE.IUniform<number[]>;
 };
 
+type FormationState = "heart" | "falling" | "ground" | "rising";
+
 export class ThreeScene {
   private static readonly HEART_SCALE = 4.8;
   private static readonly HEART_Y_STRETCH = 1.08;
   private static readonly RIPPLE_POOL_SIZE = 8;
+  private static readonly IDLE_FALL_DELAY_SEC = 5.5;
+  private static readonly FALL_DURATION_SEC = 1.26;
+  private static readonly FALL_STAGGER_SEC = 2.8;
+  private static readonly RISE_DURATION_SEC = 1.12;
+  private static readonly RISE_STAGGER_SEC = 1.46;
   private container: HTMLElement;
   private scene: THREE.Scene;
   private camera: THREE.PerspectiveCamera;
@@ -50,6 +57,17 @@ export class ThreeScene {
   private nextBeatAtSec: number | null = null;
   private lastBeatAtSec: number | null = null;
   private hasLiveRate = false;
+  private basePositions?: Float32Array;
+  private groundPositions?: Float32Array;
+  private transitionFromPositions?: Float32Array;
+  private transitionToPositions?: Float32Array;
+  private particleDelays?: Float32Array;
+  private formationState: FormationState = "heart";
+  private formationTransitionStartSec = 0;
+  private formationTransitionDurationSec = 0;
+  private formationTransitionStaggerSec = 0;
+  private disconnectedSinceSec: number | null = null;
+  private isPulseEnabled = false;
 
   constructor(container: HTMLElement) {
     if (!container) {
@@ -136,6 +154,8 @@ export class ThreeScene {
       phaseOffsets[i] = Math.random() * Math.PI * 2;
     }
 
+    this.initializeFormationPositions(positions);
+
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
     geometry.setAttribute(
@@ -199,6 +219,189 @@ export class ThreeScene {
     return new THREE.Points(geometry, material);
   }
 
+  private initializeFormationPositions(basePositions: Float32Array): void {
+    const particleCount = basePositions.length / 3;
+    this.basePositions = basePositions.slice();
+    this.groundPositions = new Float32Array(basePositions.length);
+    this.transitionFromPositions = new Float32Array(basePositions.length);
+    this.transitionToPositions = new Float32Array(basePositions.length);
+    this.particleDelays = new Float32Array(particleCount);
+    const base = this.basePositions;
+    const ground = this.groundPositions;
+    const delays = this.particleDelays;
+    if (!base || !ground || !delays) {
+      return;
+    }
+
+    let minZ = Number.POSITIVE_INFINITY;
+    let maxZ = Number.NEGATIVE_INFINITY;
+    for (let i = 0; i < particleCount; i += 1) {
+      const z = base[i * 3 + 2] ?? 0;
+      minZ = Math.min(minZ, z);
+      maxZ = Math.max(maxZ, z);
+      delays[i] = Math.random();
+    }
+
+    const zRange = Math.max(maxZ - minZ, 0.1);
+    const planeZ = minZ - zRange * 0.12 - 0.9;
+    for (let i = 0; i < particleCount; i += 1) {
+      const i3 = i * 3;
+      const spreadX = THREE.MathUtils.randFloatSpread(0.56);
+      const spreadY = THREE.MathUtils.randFloatSpread(0.56);
+      const settle = Math.random() * 0.26;
+      ground[i3] = (base[i3] ?? 0) * 0.96 + spreadX;
+      ground[i3 + 1] = (base[i3 + 1] ?? 0) * 0.96 + spreadY;
+      ground[i3 + 2] = planeZ + settle;
+    }
+  }
+
+  private getHeartPositionAttribute(): THREE.BufferAttribute | null {
+    if (!this.heartParticles) {
+      return null;
+    }
+
+    const attribute = this.heartParticles.geometry.getAttribute("position");
+    if (!(attribute instanceof THREE.BufferAttribute)) {
+      return null;
+    }
+
+    return attribute;
+  }
+
+  private startFormationTransition(
+    targetState: "falling" | "rising",
+    targetPositions: Float32Array,
+    durationSec: number,
+    staggerSec: number,
+  ): void {
+    const positionAttribute = this.getHeartPositionAttribute();
+    if (
+      !positionAttribute ||
+      !this.transitionFromPositions ||
+      !this.transitionToPositions
+    ) {
+      return;
+    }
+
+    const current = positionAttribute.array;
+    if (!(current instanceof Float32Array)) {
+      return;
+    }
+    if (current.length !== targetPositions.length) {
+      return;
+    }
+
+    this.transitionFromPositions.set(current);
+    this.transitionToPositions.set(targetPositions);
+    this.formationState = targetState;
+    this.formationTransitionStartSec = this.timer.getElapsed();
+    this.formationTransitionDurationSec = Math.max(durationSec, 0.01);
+    this.formationTransitionStaggerSec = Math.max(staggerSec, 0);
+  }
+
+  private beginParticleFall(): void {
+    if (
+      !this.groundPositions ||
+      this.formationState === "falling" ||
+      this.formationState === "ground"
+    ) {
+      return;
+    }
+
+    this.startFormationTransition(
+      "falling",
+      this.groundPositions,
+      ThreeScene.FALL_DURATION_SEC,
+      ThreeScene.FALL_STAGGER_SEC,
+    );
+  }
+
+  private beginParticleRise(): void {
+    if (
+      !this.basePositions ||
+      this.formationState === "rising" ||
+      this.formationState === "heart"
+    ) {
+      return;
+    }
+
+    this.startFormationTransition(
+      "rising",
+      this.basePositions,
+      ThreeScene.RISE_DURATION_SEC,
+      ThreeScene.RISE_STAGGER_SEC,
+    );
+  }
+
+  private updateParticleFormation(elapsedSeconds: number): void {
+    if (this.formationState !== "falling" && this.formationState !== "rising") {
+      return;
+    }
+
+    const positionAttribute = this.getHeartPositionAttribute();
+    const from = this.transitionFromPositions;
+    const to = this.transitionToPositions;
+    const delays = this.particleDelays;
+    if (
+      !positionAttribute ||
+      !from ||
+      !to ||
+      !delays
+    ) {
+      return;
+    }
+
+    const current = positionAttribute.array;
+    if (!(current instanceof Float32Array)) {
+      return;
+    }
+
+    const particleCount = delays.length;
+    const transitionState = this.formationState;
+    const duration = this.formationTransitionDurationSec;
+    const stagger = this.formationTransitionStaggerSec;
+    let allFinished = true;
+
+    for (let i = 0; i < particleCount; i += 1) {
+      const localStart =
+        this.formationTransitionStartSec + (delays[i] ?? 0) * stagger;
+      const progress = THREE.MathUtils.clamp(
+        (elapsedSeconds - localStart) / duration,
+        0,
+        1,
+      );
+      if (progress < 1) {
+        allFinished = false;
+      }
+
+      const eased =
+        transitionState === "falling"
+          ? progress * progress
+          : 1 - Math.pow(1 - progress, 3);
+      const i3 = i * 3;
+      const fromX = from[i3] ?? 0;
+      const fromY = from[i3 + 1] ?? 0;
+      const fromZ = from[i3 + 2] ?? 0;
+      const toX = to[i3] ?? 0;
+      const toY = to[i3 + 1] ?? 0;
+      const toZ = to[i3 + 2] ?? 0;
+      current[i3] =
+        fromX +
+        (toX - fromX) * eased;
+      current[i3 + 1] =
+        fromY +
+        (toY - fromY) * eased;
+      current[i3 + 2] =
+        fromZ +
+        (toZ - fromZ) * eased;
+    }
+
+    positionAttribute.needsUpdate = true;
+    if (allFinished) {
+      this.formationState = transitionState === "falling" ? "ground" : "heart";
+    }
+  }
+
   private getHeartUniforms(): HeartUniforms | null {
     if (!this.heartParticles) {
       return null;
@@ -230,6 +433,7 @@ export class ThreeScene {
     this.timer.connect(document);
 
     this.heartParticles = this.createParticleHeart();
+    this.heartParticles.frustumCulled = false;
     this.heartParticles.rotation.set(-Math.PI / 2, 0, 0);
     this.scene.add(this.heartParticles);
 
@@ -371,6 +575,17 @@ export class ThreeScene {
           }
         }
       }
+
+      if (
+        !this.isPulseEnabled &&
+        this.disconnectedSinceSec !== null &&
+        elapsedSeconds - this.disconnectedSinceSec >=
+          ThreeScene.IDLE_FALL_DELAY_SEC
+      ) {
+        this.beginParticleFall();
+      }
+
+      this.updateParticleFormation(elapsedSeconds);
     }
 
     this.renderer.render(this.scene, this.camera);
@@ -382,15 +597,21 @@ export class ThreeScene {
       return;
     }
 
+    this.isPulseEnabled = enabled;
     uniforms.uPulseEnabled.value = enabled ? 1 : 0;
-    if (!enabled) {
-      uniforms.uBeatStrength.value = 0;
-      uniforms.uBeatStartedAt.value = -9999;
-      this.hasLiveRate = false;
-      this.previousIntervalSec = null;
-      this.nextBeatAtSec = null;
-      this.lastBeatAtSec = null;
+    if (enabled) {
+      this.disconnectedSinceSec = null;
+      this.beginParticleRise();
+      return;
     }
+
+    this.disconnectedSinceSec = this.timer.getElapsed();
+    uniforms.uBeatStrength.value = 0;
+    uniforms.uBeatStartedAt.value = -9999;
+    this.hasLiveRate = false;
+    this.previousIntervalSec = null;
+    this.nextBeatAtSec = null;
+    this.lastBeatAtSec = null;
   }
 
   public triggerHeartbeat(bpm: number, rrMs: number | null): void {
