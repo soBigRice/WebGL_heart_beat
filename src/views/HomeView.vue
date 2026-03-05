@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import * as echarts from 'echarts'
+import gsap from 'gsap'
 import {
   Activity,
   AlertTriangle,
@@ -12,7 +13,7 @@ import {
   Radio,
   Sparkles,
 } from 'lucide-vue-next'
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useHeartBluetooth } from '../composables/useHeartBluetooth'
 import { ThreeScene } from '../webgl/ThreeScene'
 
@@ -32,9 +33,21 @@ const {
 const chartRef = ref<HTMLDivElement | null>(null)
 const heartViewportRef = ref<HTMLDivElement | null>(null)
 const visualStageRef = ref<HTMLElement | null>(null)
+const pageTopRef = ref<HTMLElement | null>(null)
+const brandIconShellRef = ref<HTMLDivElement | null>(null)
+const statusGroupRef = ref<HTMLDivElement | null>(null)
+const statusChipRef = ref<HTMLDivElement | null>(null)
+const heartPanelRef = ref<HTMLElement | null>(null)
+const trendPanelRef = ref<HTMLElement | null>(null)
+const metricsColumnRef = ref<HTMLDivElement | null>(null)
+const fabButtonRef = ref<HTMLButtonElement | null>(null)
+const aboutModalMaskRef = ref<HTMLDivElement | null>(null)
+const aboutModalRef = ref<HTMLElement | null>(null)
 
 let bpmChart: echarts.ECharts | null = null
 let threeScene: ThreeScene | null = null
+let uiIntroTimeline: gsap.core.Timeline | null = null
+let uiAmbientTweens: gsap.core.Tween[] = []
 
 const locale = ref<'zh' | 'en'>('zh')
 const messages = {
@@ -192,7 +205,7 @@ const localeToggleAria = computed(() =>
   locale.value === 'zh' ? t('switchLocaleAriaEn') : t('switchLocaleAriaZh'),
 )
 
-const recentSamples = computed(() => samples.value.slice(0, 4))
+const recentSamples = computed(() => samples.value.slice(0, 80))
 const aboutTechTags = ['Vue 3', 'TypeScript', 'Vite', 'Three.js', 'ECharts', 'Web Bluetooth']
 const authorProfileUrl = 'https://github.com/soBigRice'
 const aboutAbilities = computed(() => [
@@ -314,7 +327,16 @@ const localizedStatusMessage = computed(() => {
   return raw
 })
 
-const SAMPLE_WINDOW_SIZE = 120
+const ECG_WINDOW_POINTS = 240
+const ECG_TICK_MS = 250
+const ECG_LABEL_EVERY_TICKS = Math.max(Math.round(1000 / ECG_TICK_MS), 1)
+const ECG_GRID_INTERVAL = Math.max(ECG_LABEL_EVERY_TICKS - 1, 0)
+const ecgXAxisSlots = Array.from({ length: ECG_WINDOW_POINTS }, (_, index) => `${index}`)
+const ecgValues = ref<number[]>(Array.from({ length: ECG_WINDOW_POINTS }, () => 0))
+const ecgTimeStamps = ref<number[]>(Array.from({ length: ECG_WINDOW_POINTS }, () => Date.now()))
+const pendingEcgPoints: number[] = []
+let ecgTickerId: number | null = null
+let lastInjectedSampleAt = 0
 
 const clamp = (value: number, min: number, max: number): number =>
   Math.min(max, Math.max(min, value))
@@ -326,29 +348,45 @@ const toEcgPeak = (bpm: number, rrMs: number | null): number => {
   return Number((rrFactor * 0.7 + bpmFactor * 0.3).toFixed(4))
 }
 
+const queueEcgBeat = (bpm: number, rrMs: number | null): void => {
+  const peak = clamp(toEcgPeak(bpm, rrMs), 0.52, 1.28)
+  const waveform = [0.02, 0.05, 0, peak * 0.18, 0, peak, 0, peak * 0.28, 0.04, 0]
+  pendingEcgPoints.push(...waveform)
+  if (pendingEcgPoints.length > ECG_WINDOW_POINTS) {
+    pendingEcgPoints.splice(0, pendingEcgPoints.length - ECG_WINDOW_POINTS)
+  }
+}
+
+const pushEcgFrame = (): void => {
+  const nextValue = pendingEcgPoints.length > 0 ? (pendingEcgPoints.shift() ?? 0) : 0
+  ecgValues.value.shift()
+  ecgValues.value.push(nextValue)
+  ecgTimeStamps.value.shift()
+  ecgTimeStamps.value.push(Date.now())
+}
+
+const startEcgTicker = (): void => {
+  if (ecgTickerId !== null) {
+    window.clearInterval(ecgTickerId)
+  }
+  ecgTickerId = window.setInterval(() => {
+    pushEcgFrame()
+    renderChart()
+  }, ECG_TICK_MS)
+}
+
+const stopEcgTicker = (): void => {
+  if (ecgTickerId === null) {
+    return
+  }
+  window.clearInterval(ecgTickerId)
+  ecgTickerId = null
+}
+
 const renderChart = (): void => {
   if (!chartRef.value) {
     return
   }
-
-  const noDataXData = Array.from(
-    { length: SAMPLE_WINDOW_SIZE },
-    (_, index) => `${index}`,
-  )
-
-  const noDataGraphic: echarts.EChartsOption['graphic'] = [
-    {
-      type: 'text',
-      left: 'center',
-      top: 'middle',
-      silent: true,
-      style: {
-        text: t('waitingHeartData'),
-        fill: 'rgba(148, 163, 184, 0.72)',
-        font: '500 13px "Segoe UI", sans-serif',
-      },
-    },
-  ]
 
   const ecgAxisLabelFormatter = (value: number): string => {
     if (locale.value === 'zh') {
@@ -361,30 +399,40 @@ const renderChart = (): void => {
     bpmChart = echarts.init(chartRef.value)
   }
 
-  const trendSamples = [...samples.value].reverse().slice(-SAMPLE_WINDOW_SIZE)
-  const hasRealSamples = trendSamples.length > 0
-
-  if (!hasRealSamples) {
-    bpmChart.setOption({
+  bpmChart.setOption(
+    {
       animation: false,
       backgroundColor: 'transparent',
-      graphic: noDataGraphic,
+      graphic: [],
       grid: { left: 44, right: 12, top: 18, bottom: 18 },
       xAxis: {
         type: 'category',
         boundaryGap: false,
-        data: noDataXData,
-        axisLabel: { show: false },
+        data: ecgXAxisSlots,
+        axisLabel: {
+          show: false,
+          color: 'rgba(148, 163, 184, 0.7)',
+          fontSize: 10,
+          interval: ECG_GRID_INTERVAL,
+          formatter: (_value: string, index: number) => {
+            const timeMs = ecgTimeStamps.value[index]
+            if (!timeMs) {
+              return ''
+            }
+            return new Date(timeMs).toLocaleTimeString([], { hour12: false })
+          },
+        },
         axisTick: { show: false },
         axisLine: { lineStyle: { color: 'rgba(148, 163, 184, 0.2)' } },
         splitLine: {
           show: true,
+          interval: ECG_GRID_INTERVAL,
           lineStyle: { color: 'rgba(34, 211, 238, 0.12)' },
         },
       },
       yAxis: {
         type: 'value',
-        min: 0,
+        min: -0.08,
         max: 1.4,
         splitNumber: 4,
         name: t('ecgAxisName'),
@@ -414,14 +462,23 @@ const renderChart = (): void => {
           lineStyle: { color: 'rgba(34, 211, 238, 0.08)' },
         },
       },
+      tooltip: {
+        trigger: 'axis',
+        backgroundColor: 'rgba(2, 6, 23, 0.9)',
+        borderColor: 'rgba(56, 189, 248, 0.32)',
+        textStyle: { color: '#e2e8f0' },
+      },
       series: [
         {
           name: 'ECG Glow',
           type: 'line',
           smooth: false,
           showSymbol: false,
-          lineStyle: { width: 7, color: 'rgba(34, 211, 238, 0.2)' },
-          data: [],
+          lineStyle: {
+            width: 7,
+            color: 'rgba(34, 211, 238, 0.2)',
+          },
+          data: ecgValues.value,
           silent: true,
           z: 1,
         },
@@ -430,120 +487,26 @@ const renderChart = (): void => {
           type: 'line',
           smooth: false,
           showSymbol: false,
-          lineStyle: { width: 2.2, color: '#22d3ee' },
-          data: [],
+          lineStyle: {
+            width: 2.2,
+            color: '#22d3ee',
+            shadowColor: 'rgba(34, 211, 238, 0.7)',
+            shadowBlur: 14,
+          },
+          itemStyle: { color: '#f472b6' },
+          areaStyle: {
+            color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+              { offset: 0, color: 'rgba(34, 211, 238, 0.2)' },
+              { offset: 1, color: 'rgba(34, 211, 238, 0.01)' },
+            ]),
+          },
+          data: ecgValues.value,
           z: 2,
         },
       ],
-    })
-    return
-  }
-
-  const ecgXData: string[] = []
-  const ecgData: number[] = []
-  trendSamples.forEach((sample) => {
-    const peak = toEcgPeak(sample.bpm, sample.rrMs)
-    ecgXData.push(sample.timeLabel, '', '')
-    ecgData.push(0, peak, 0)
-  })
-
-  bpmChart.setOption({
-    animation: false,
-    backgroundColor: 'transparent',
-    graphic: [],
-    grid: { left: 44, right: 12, top: 18, bottom: 18 },
-    xAxis: {
-      type: 'category',
-      boundaryGap: false,
-      data: ecgXData,
-      axisLabel: {
-        show: true,
-        color: 'rgba(148, 163, 184, 0.7)',
-        fontSize: 10,
-        formatter: (value: string) => value,
-      },
-      axisTick: { show: false },
-      axisLine: { lineStyle: { color: 'rgba(148, 163, 184, 0.2)' } },
-      splitLine: {
-        show: true,
-        lineStyle: { color: 'rgba(34, 211, 238, 0.12)' },
-      },
     },
-    yAxis: {
-      type: 'value',
-      min: 0,
-      max: 1.4,
-      splitNumber: 4,
-      name: t('ecgAxisName'),
-      nameLocation: 'middle',
-      nameGap: 34,
-      nameTextStyle: {
-        color: 'rgba(125, 211, 252, 0.8)',
-        fontSize: 10,
-      },
-      axisLabel: {
-        show: true,
-        color: 'rgba(148, 163, 184, 0.76)',
-        fontSize: 10,
-        formatter: ecgAxisLabelFormatter,
-      },
-      axisTick: {
-        show: true,
-        length: 3,
-        lineStyle: { color: 'rgba(148, 163, 184, 0.28)' },
-      },
-      axisLine: {
-        show: true,
-        lineStyle: { color: 'rgba(148, 163, 184, 0.2)' },
-      },
-      splitLine: {
-        show: true,
-        lineStyle: { color: 'rgba(34, 211, 238, 0.08)' },
-      },
-    },
-    tooltip: {
-      trigger: 'axis',
-      backgroundColor: 'rgba(2, 6, 23, 0.9)',
-      borderColor: 'rgba(56, 189, 248, 0.32)',
-      textStyle: { color: '#e2e8f0' },
-    },
-    series: [
-      {
-        name: 'ECG Glow',
-        type: 'line',
-        smooth: false,
-        showSymbol: false,
-        lineStyle: {
-          width: 7,
-          color: 'rgba(34, 211, 238, 0.2)',
-        },
-        data: ecgData,
-        silent: true,
-        z: 1,
-      },
-      {
-        name: 'Lead II',
-        type: 'line',
-        smooth: false,
-        showSymbol: false,
-        lineStyle: {
-          width: 2.2,
-          color: '#22d3ee',
-          shadowColor: 'rgba(34, 211, 238, 0.7)',
-          shadowBlur: 14,
-        },
-        itemStyle: { color: '#f472b6' },
-        areaStyle: {
-          color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-            { offset: 0, color: 'rgba(34, 211, 238, 0.2)' },
-            { offset: 1, color: 'rgba(34, 211, 238, 0.01)' },
-          ]),
-        },
-        data: ecgData,
-        z: 2,
-      },
-    ],
-  })
+    { replaceMerge: ['series'] },
+  )
 }
 
 const handleResize = (): void => {
@@ -576,11 +539,14 @@ const toggleVisualFullscreen = async (): Promise<void> => {
 }
 
 const handleFabClick = async (): Promise<void> => {
+  ensureFabVisible()
   if (isConnected.value) {
     await disconnectWatch()
+    ensureFabVisible()
     return
   }
   await connectWatch()
+  ensureFabVisible()
 }
 
 const handleWindowKeydown = (event: KeyboardEvent): void => {
@@ -589,8 +555,119 @@ const handleWindowKeydown = (event: KeyboardEvent): void => {
   }
 }
 
+const ensureFabVisible = (): void => {
+  if (!fabButtonRef.value) {
+    return
+  }
+  const button = fabButtonRef.value
+  button.style.visibility = 'visible'
+  if (button.style.opacity === '0') {
+    button.style.opacity = ''
+  }
+}
+
+const clearUiAnimations = (): void => {
+  uiIntroTimeline?.kill()
+  uiIntroTimeline = null
+  uiAmbientTweens.forEach((tween) => tween.kill())
+  uiAmbientTweens = []
+}
+
+const playUiIntroAnimations = (): void => {
+  clearUiAnimations()
+
+  const chips = statusGroupRef.value
+    ? Array.from(statusGroupRef.value.querySelectorAll<HTMLElement>('.chip'))
+    : []
+  const metricCards = metricsColumnRef.value
+    ? Array.from(metricsColumnRef.value.querySelectorAll<HTMLElement>('.metric'))
+    : []
+  const featurePanels = [heartPanelRef.value, trendPanelRef.value].filter(
+    (panel): panel is HTMLElement => panel !== null,
+  )
+
+  uiIntroTimeline = gsap.timeline({
+    defaults: {
+      ease: 'power3.out',
+    },
+  })
+
+  if (pageTopRef.value) {
+    uiIntroTimeline.from(pageTopRef.value, {
+      y: -26,
+      autoAlpha: 0,
+      duration: 0.72,
+    })
+  }
+  if (chips.length > 0) {
+    uiIntroTimeline.from(
+      chips,
+      {
+        y: -12,
+        autoAlpha: 0,
+        duration: 0.42,
+        stagger: 0.08,
+      },
+      '-=0.44',
+    )
+  }
+  if (featurePanels.length > 0) {
+    uiIntroTimeline.from(
+      featurePanels,
+      {
+        y: 30,
+        autoAlpha: 0,
+        duration: 0.76,
+        stagger: 0.12,
+      },
+      '-=0.36',
+    )
+  }
+  if (metricCards.length > 0) {
+    uiIntroTimeline.from(
+      metricCards,
+      {
+        x: 24,
+        autoAlpha: 0,
+        duration: 0.62,
+        stagger: 0.1,
+      },
+      '-=0.52',
+    )
+  }
+  if (brandIconShellRef.value) {
+    uiAmbientTweens.push(
+      gsap.to(brandIconShellRef.value, {
+        scale: 1.05,
+        duration: 2.2,
+        ease: 'sine.inOut',
+        repeat: -1,
+        yoyo: true,
+      }),
+    )
+  }
+}
+
+const playAboutModalAnimation = async (): Promise<void> => {
+  await nextTick()
+  if (!aboutModalMaskRef.value || !aboutModalRef.value) {
+    return
+  }
+  gsap.fromTo(
+    aboutModalMaskRef.value,
+    { autoAlpha: 0 },
+    { autoAlpha: 1, duration: 0.2, ease: 'power1.out' },
+  )
+  gsap.fromTo(
+    aboutModalRef.value,
+    { autoAlpha: 0, y: 20, scale: 0.96 },
+    { autoAlpha: 1, y: 0, scale: 1, duration: 0.32, ease: 'power2.out' },
+  )
+}
+
 onMounted(() => {
   renderChart()
+  startEcgTicker()
   window.addEventListener('resize', handleResize)
   window.addEventListener('keydown', handleWindowKeydown)
   document.addEventListener('fullscreenchange', syncFullscreenState)
@@ -598,24 +675,74 @@ onMounted(() => {
     threeScene = new ThreeScene(heartViewportRef.value)
     threeScene.setPulseEnabled(isConnected.value)
   }
+  playUiIntroAnimations()
+  window.setTimeout(ensureFabVisible, 0)
 })
 
 watch(samples, () => {
   const latestSample = samples.value[0]
-  if (latestSample && threeScene) {
-    threeScene.triggerHeartbeat(latestSample.bpm, latestSample.rrMs)
+  if (latestSample) {
+    if (latestSample.timeMs !== lastInjectedSampleAt) {
+      lastInjectedSampleAt = latestSample.timeMs
+      queueEcgBeat(latestSample.bpm, latestSample.rrMs)
+      pushEcgFrame()
+    }
+    if (threeScene) {
+      threeScene.triggerHeartbeat(latestSample.bpm, latestSample.rrMs)
+    }
   }
   renderChart()
 })
 
 watch(isConnected, (connected) => {
   threeScene?.setPulseEnabled(connected)
+  ensureFabVisible()
+  if (statusChipRef.value) {
+    gsap.fromTo(
+      statusChipRef.value,
+      { scale: 0.92 },
+      { scale: 1, duration: 0.42, ease: 'back.out(2.4)' },
+    )
+  }
+  if (heartPanelRef.value) {
+    gsap.fromTo(
+      heartPanelRef.value,
+      { scale: 0.985 },
+      { scale: 1, duration: 0.5, ease: 'power2.out' },
+    )
+  }
+  if (fabButtonRef.value) {
+    gsap.fromTo(
+      fabButtonRef.value,
+      { scale: 1 },
+      { scale: 1.08, duration: 0.18, repeat: 1, yoyo: true, ease: 'power1.inOut' },
+    )
+  }
+})
+
+watch(isConnecting, () => {
+  ensureFabVisible()
+})
+
+watch(isAboutModalOpen, (open) => {
+  if (open) {
+    void playAboutModalAnimation()
+  }
 })
 
 onBeforeUnmount(() => {
+  stopEcgTicker()
   window.removeEventListener('resize', handleResize)
   window.removeEventListener('keydown', handleWindowKeydown)
   document.removeEventListener('fullscreenchange', syncFullscreenState)
+  clearUiAnimations()
+  gsap.killTweensOf([
+    statusChipRef.value,
+    heartPanelRef.value,
+    fabButtonRef.value,
+    aboutModalMaskRef.value,
+    aboutModalRef.value,
+  ])
   if (document.fullscreenElement === visualStageRef.value) {
     void document.exitFullscreen().catch(() => undefined)
   }
@@ -632,9 +759,9 @@ onBeforeUnmount(() => {
 
 <template>
   <section class="dashboard">
-    <header class="page-top">
+    <header ref="pageTopRef" class="page-top">
       <div class="brand">
-        <div class="brand-icon-shell">
+        <div ref="brandIconShellRef" class="brand-icon-shell">
           <Activity class="brand-icon" />
         </div>
         <div class="brand-copy">
@@ -643,8 +770,18 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
-      <div class="status-group">
-        <div class="chip status-chip" :class="connectionClass">
+      <div ref="statusGroupRef" class="status-group">
+        <button
+          ref="fabButtonRef"
+          class="chip connect-chip"
+          :class="connectionClass"
+          :disabled="isFabDisabled"
+          @click="handleFabClick"
+        >
+          <Bluetooth class="fab-icon" />
+          <span>{{ fabLabel }}</span>
+        </button>
+        <div ref="statusChipRef" class="chip status-chip" :class="connectionClass">
           <span class="chip-dot"></span>
           <span>{{ connectionLabel }}</span>
         </div>
@@ -677,7 +814,7 @@ onBeforeUnmount(() => {
         class="visual-stage"
         :class="{ 'is-fullscreen': isVisualFullscreen }"
       >
-        <article class="glass heart-panel">
+        <article ref="heartPanelRef" class="glass heart-panel">
           <div class="panel-head-row">
             <div class="panel-head">
               <p class="panel-kicker">
@@ -704,7 +841,7 @@ onBeforeUnmount(() => {
           </p>
         </article>
 
-        <article class="glass trend-panel">
+        <article ref="trendPanelRef" class="glass trend-panel">
           <div class="trend-grid">
             <div class="trend-card">
               <div class="trend-head">
@@ -720,7 +857,7 @@ onBeforeUnmount(() => {
         </article>
       </section>
 
-      <div v-if="!isVisualFullscreen" class="metrics-column">
+      <div v-if="!isVisualFullscreen" ref="metricsColumnRef" class="metrics-column">
         <article class="glass metric bpm-card">
           <div class="bpm-head">
             <p class="metric-label">
@@ -749,19 +886,21 @@ onBeforeUnmount(() => {
           </p>
         </article>
 
-        <article class="glass metric">
+        <article class="glass metric device-metric">
           <p class="metric-label">
             <Cpu class="label-icon" />
             <span>{{ t('device') }}</span>
           </p>
           <p class="metric-value">{{ deviceName }}</p>
-          <ul class="mini-feed">
-            <li v-for="sample in recentSamples" :key="sample.timeMs">
-              <span>{{ sample.timeLabel }}</span>
-              <span>{{ sample.bpm }} {{ t('bpm') }}</span>
-            </li>
-            <li v-if="!recentSamples.length" class="empty-row">{{ t('noSamplesYet') }}</li>
-          </ul>
+          <div class="device-scroll">
+            <ul class="mini-feed">
+              <li v-for="sample in recentSamples" :key="sample.timeMs">
+                <span>{{ sample.timeLabel }}</span>
+                <span>{{ sample.bpm }} {{ t('bpm') }}</span>
+              </li>
+              <li v-if="!recentSamples.length" class="empty-row">{{ t('noSamplesYet') }}</li>
+            </ul>
+          </div>
         </article>
       </div>
     </div>
@@ -775,14 +914,20 @@ onBeforeUnmount(() => {
       {{ t('unsupportedAlert') }}
     </p>
 
-    <button class="fab-connect" :disabled="isFabDisabled" @click="handleFabClick">
-      <Bluetooth class="fab-icon" />
-      <span>{{ fabLabel }}</span>
-    </button>
-
     <Teleport to="body">
-      <div v-if="isAboutModalOpen" class="about-modal-mask" @click="closeAboutModal">
-        <article class="about-modal glass" role="dialog" aria-modal="true" @click.stop>
+      <div
+        v-if="isAboutModalOpen"
+        ref="aboutModalMaskRef"
+        class="about-modal-mask"
+        @click="closeAboutModal"
+      >
+        <article
+          ref="aboutModalRef"
+          class="about-modal glass"
+          role="dialog"
+          aria-modal="true"
+          @click.stop
+        >
           <div class="about-modal-head">
             <h2 class="about-modal-title">{{ t('aboutTitle') }}</h2>
             <button
@@ -839,9 +984,12 @@ onBeforeUnmount(() => {
 <style scoped>
 .dashboard {
   position: relative;
-  display: grid;
-  gap: 10px;
-  padding-bottom: 74px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  height: 100%;
+  min-height: 0;
+  padding-bottom: 10px;
 }
 
 .page-top {
@@ -850,6 +998,7 @@ onBeforeUnmount(() => {
   justify-content: space-between;
   gap: 14px;
   padding: 4px 2px;
+  flex-shrink: 0;
 }
 
 .brand {
@@ -998,6 +1147,9 @@ onBeforeUnmount(() => {
   display: grid;
   gap: 10px;
   grid-template-columns: minmax(0, 1.95fr) minmax(0, 0.72fr);
+  flex: 1;
+  min-height: 0;
+  align-items: stretch;
 }
 
 .hero-grid.is-visual-fullscreen {
@@ -1008,6 +1160,8 @@ onBeforeUnmount(() => {
   display: grid;
   gap: 10px;
   min-width: 0;
+  min-height: 0;
+  grid-template-rows: minmax(0, 1fr) minmax(120px, 0.44fr);
 }
 
 .glass {
@@ -1025,9 +1179,11 @@ onBeforeUnmount(() => {
 }
 
 .heart-panel {
-  padding: 18px;
+  padding: 16px;
   display: grid;
-  gap: 12px;
+  gap: 10px;
+  min-height: 0;
+  grid-template-rows: auto minmax(0, 1fr) auto;
 }
 
 .panel-head-row {
@@ -1093,8 +1249,9 @@ onBeforeUnmount(() => {
 
 .heart-viewport {
   width: 100%;
-  aspect-ratio: 1.35 / 1;
-  min-height: 340px;
+  height: 100%;
+  min-height: 0;
+  aspect-ratio: auto;
   border-radius: 12px;
   border: 1px solid rgba(34, 211, 238, 0.28);
   background: radial-gradient(circle at 50% 35%, rgba(15, 23, 42, 0.62), rgba(2, 6, 23, 0.92));
@@ -1113,12 +1270,15 @@ onBeforeUnmount(() => {
 .metrics-column {
   display: grid;
   gap: 8px;
+  min-height: 0;
+  grid-template-rows: minmax(0, 1.06fr) minmax(0, 0.94fr);
 }
 
 .metric {
   padding: 10px;
   display: grid;
   gap: 6px;
+  min-height: 0;
 }
 
 .metric-label {
@@ -1342,16 +1502,47 @@ onBeforeUnmount(() => {
   color: #64748b;
 }
 
+.device-metric {
+  grid-template-rows: auto auto minmax(0, 1fr);
+}
+
+.device-scroll {
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 6px;
+  display: grid;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(56, 189, 248, 0.6) rgba(15, 23, 42, 0.4);
+}
+
+.device-scroll::-webkit-scrollbar {
+  width: 8px;
+}
+
+.device-scroll::-webkit-scrollbar-track {
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.4);
+}
+
+.device-scroll::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  border: 1px solid rgba(125, 211, 252, 0.28);
+  background: linear-gradient(180deg, rgba(34, 211, 238, 0.9), rgba(56, 189, 248, 0.56));
+}
+
 .trend-panel {
   padding: 10px 12px;
   display: grid;
   gap: 8px;
+  min-height: 0;
 }
 
 .trend-grid {
   display: grid;
   gap: 10px;
   grid-template-columns: minmax(0, 1fr);
+  min-height: 0;
 }
 
 .trend-card {
@@ -1359,6 +1550,9 @@ onBeforeUnmount(() => {
   border-radius: 12px;
   padding: 8px;
   background: rgba(2, 6, 23, 0.32);
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
 }
 
 .trend-head {
@@ -1391,7 +1585,8 @@ onBeforeUnmount(() => {
 
 .trend-chart {
   width: 100%;
-  height: 146px;
+  height: 100%;
+  min-height: 118px;
   border-radius: 12px;
   border: 1px solid rgba(34, 211, 238, 0.22);
   background: rgba(2, 6, 23, 0.32);
@@ -1605,30 +1800,66 @@ onBeforeUnmount(() => {
   font-weight: 600;
 }
 
-.fab-connect {
-  position: fixed;
-  right: 24px;
-  bottom: 26px;
-  z-index: 28;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  border: 0;
-  border-radius: 999px;
-  padding: 14px 20px;
-  font: inherit;
+.connect-chip {
+  min-width: 164px;
+  justify-content: center;
+  border-width: 1.5px;
   font-weight: 700;
   letter-spacing: 0.02em;
-  color: #031526;
-  background: linear-gradient(135deg, #22d3ee 0%, #f472b6 100%);
-  box-shadow:
-    0 16px 28px rgba(6, 182, 212, 0.35),
-    0 8px 20px rgba(244, 114, 182, 0.25);
   cursor: pointer;
   transition:
-    transform 0.2s ease,
-    filter 0.2s ease,
-    opacity 0.2s ease;
+    border-color 0.2s ease,
+    background-color 0.2s ease,
+    box-shadow 0.2s ease,
+    color 0.2s ease,
+    opacity 0.2s ease,
+    filter 0.2s ease;
+}
+
+.connect-chip .fab-icon {
+  color: currentColor;
+}
+
+.connect-chip.is-disconnected {
+  color: #67e8f9;
+  border-color: rgba(34, 211, 238, 0.6);
+  background: linear-gradient(
+    135deg,
+    rgba(34, 211, 238, 0.23),
+    rgba(8, 47, 73, 0.58)
+  );
+  box-shadow:
+    inset 0 0 0 1px rgba(34, 211, 238, 0.22),
+    0 10px 24px rgba(6, 182, 212, 0.28);
+  animation: connectAttention 1.9s ease-in-out infinite;
+}
+
+.connect-chip.is-pending {
+  color: #fde68a;
+  border-color: rgba(250, 204, 21, 0.52);
+  background: linear-gradient(
+    135deg,
+    rgba(250, 204, 21, 0.24),
+    rgba(113, 63, 18, 0.5)
+  );
+  box-shadow:
+    inset 0 0 0 1px rgba(250, 204, 21, 0.22),
+    0 10px 24px rgba(250, 204, 21, 0.18);
+  animation: none;
+}
+
+.connect-chip.is-connected {
+  color: #86efac;
+  border-color: rgba(74, 222, 128, 0.54);
+  background: linear-gradient(
+    135deg,
+    rgba(74, 222, 128, 0.22),
+    rgba(20, 83, 45, 0.5)
+  );
+  box-shadow:
+    inset 0 0 0 1px rgba(74, 222, 128, 0.18),
+    0 10px 24px rgba(34, 197, 94, 0.18);
+  animation: none;
 }
 
 .fab-icon {
@@ -1637,14 +1868,33 @@ onBeforeUnmount(() => {
   stroke-width: 2.3;
 }
 
-.fab-connect:hover:not(:disabled) {
-  transform: translateY(-2px);
-  filter: brightness(1.04);
+.connect-chip:hover:not(:disabled) {
+  filter: brightness(1.06);
 }
 
-.fab-connect:disabled {
+.connect-chip:disabled {
   opacity: 0.65;
   cursor: not-allowed;
+  animation: none;
+}
+
+@keyframes connectAttention {
+  0% {
+    box-shadow:
+      inset 0 0 0 1px rgba(34, 211, 238, 0.22),
+      0 10px 24px rgba(6, 182, 212, 0.22);
+  }
+  70% {
+    box-shadow:
+      inset 0 0 0 1px rgba(34, 211, 238, 0.35),
+      0 0 0 8px rgba(34, 211, 238, 0),
+      0 12px 28px rgba(6, 182, 212, 0.34);
+  }
+  100% {
+    box-shadow:
+      inset 0 0 0 1px rgba(34, 211, 238, 0.22),
+      0 10px 24px rgba(6, 182, 212, 0.22);
+  }
 }
 
 @keyframes bpmPulse {
@@ -1663,20 +1913,48 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 980px) {
+  .dashboard {
+    display: grid;
+    gap: 10px;
+    height: auto;
+    min-height: 0;
+    padding-bottom: 74px;
+  }
+
   .page-top {
     flex-wrap: wrap;
   }
 
   .hero-grid {
     grid-template-columns: 1fr;
+    flex: none;
+    min-height: auto;
+  }
+
+  .visual-stage {
+    grid-template-rows: none;
+  }
+
+  .heart-panel {
+    padding: 18px;
+    gap: 12px;
+    grid-template-rows: none;
   }
 
   .panel-head-row {
     align-items: center;
   }
 
+  .metrics-column {
+    grid-template-rows: none;
+  }
+
   .trend-grid {
     grid-template-columns: 1fr;
+  }
+
+  .trend-card {
+    display: block;
   }
 
   .about-modal-grid {
@@ -1684,7 +1962,14 @@ onBeforeUnmount(() => {
   }
 
   .heart-viewport {
+    height: auto;
+    aspect-ratio: 1.35 / 1;
     min-height: 260px;
+  }
+
+  .trend-chart {
+    height: 146px;
+    min-height: 146px;
   }
 }
 
@@ -1730,11 +2015,8 @@ onBeforeUnmount(() => {
     font-size: 40px;
   }
 
-  .fab-connect {
-    right: 14px;
-    bottom: 14px;
-    padding: 12px 16px;
-    font-size: 14px;
+  .connect-chip {
+    padding: 10px 14px;
   }
 }
 </style>
