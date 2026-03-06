@@ -36,9 +36,12 @@ npm run dev
 - CI 校验：`.github/workflows/ci.yml`
   - push / PR 自动安装依赖并执行 `yarn build`
 - GitHub Pages 发布：`.github/workflows/deploy-pages.yml`
-  - 推送到 `main` / `master` 自动构建并部署到 Pages
+  - 推送到 `main` / `master` 自动构建，并将 `dist` 产物推送到 `gh-pages` 分支
 
-首次启用请在仓库 `Settings -> Pages` 中将 `Source` 设为 `GitHub Actions`。
+首次启用请在仓库 `Settings -> Pages` 中配置：
+
+- `Source`: `Deploy from a branch`
+- `Branch`: `gh-pages` / `root`
 
 ## 使用流程（心率广播 + 本项目）
 
